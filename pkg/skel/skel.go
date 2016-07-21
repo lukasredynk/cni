@@ -28,12 +28,13 @@ import (
 // CmdArgs captures all the arguments passed in to the plugin
 // via both env vars and stdin
 type CmdArgs struct {
-	ContainerID string
-	Netns       string
-	IfName      string
-	Args        string
-	Path        string
-	StdinData   []byte
+	ContainerID   string
+	Netns         string
+	IfName        string
+	Args          string
+	Path          string
+	UsesTapDevice string
+	StdinData     []byte
 }
 
 type reqForCmdEntry map[string]bool
@@ -41,7 +42,7 @@ type reqForCmdEntry map[string]bool
 // PluginMain is the "main" for a plugin. It accepts
 // two callback functions for add and del commands.
 func PluginMain(cmdAdd, cmdDel func(_ *CmdArgs) error) {
-	var cmd, contID, netns, ifName, args, path string
+	var cmd, contID, netns, ifName, args, path, usesTapDevice string
 
 	vars := []struct {
 		name      string
@@ -96,6 +97,14 @@ func PluginMain(cmdAdd, cmdDel func(_ *CmdArgs) error) {
 				"DEL": true,
 			},
 		},
+		{
+			"CNI_VIRT",
+			&usesTapDevice,
+			reqForCmdEntry{
+				"ADD": false,
+				"DEL": false,
+			},
+		},
 	}
 
 	argsMissing := false
@@ -117,12 +126,13 @@ func PluginMain(cmdAdd, cmdDel func(_ *CmdArgs) error) {
 	}
 
 	cmdArgs := &CmdArgs{
-		ContainerID: contID,
-		Netns:       netns,
-		IfName:      ifName,
-		Args:        args,
-		Path:        path,
-		StdinData:   stdinData,
+		ContainerID:   contID,
+		Netns:         netns,
+		IfName:        ifName,
+		Args:          args,
+		Path:          path,
+		UsesTapDevice: usesTapDevice,
+		StdinData:     stdinData,
 	}
 
 	switch cmd {
