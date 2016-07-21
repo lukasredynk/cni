@@ -151,23 +151,19 @@ func setupHostVeth(vethName string, ipConf *types.IPConfig) error {
 
 // setupTapDevice creates persistent tap device
 // and returns a newly created netlink.Link structure
-func setupTapDevice(netns, podID string, mtu int, pr *types.Result) error {
-	//err := ns.WithNetNSPath(netns, func(hostNS ns.NetNS) error {
+func setupTapDevice(podID string, mtu int, pr *types.Result) error {
 	// network device names are limited to 16 characters
 	// the suffix %d will be replaced by the kernel with a suitable number
 	ifName := fmt.Sprintf("rkt-%s-tap%d", podID[0:4], 0)
 	la := netlink.NewLinkAttrs()
 	la.Name = ifName
-	x := netlink.TUNTAP_MODE_TAP
-	tunDesc := &netlink.Tuntap{la, x}
+	la.MTU = mtu
+	mode := netlink.TUNTAP_MODE_TAP
+	flags := netlink.TUNTAP_NO_PI | netlink.TUNTAP_VNET_HDR
+	tunDesc := &netlink.Tuntap{la, mode, flags}
 	if err := netlink.LinkAdd(tunDesc); err != nil {
 		return fmt.Errorf("%v", err)
 	}
-
-	//		ifName, err := tuntap.CreatePersistentIface(ifname, tuntap.Tap)
-	//		if err != nil {
-	//			return nil, errwrap.Wrap(errors.New("tuntap persist"), err)
-	//		}
 
 	link, err := netlink.LinkByName(tunDesc.Name)
 	if err != nil {
@@ -178,14 +174,13 @@ func setupTapDevice(netns, podID string, mtu int, pr *types.Result) error {
 		return fmt.Errorf("cannot set link up %q", ifName)
 	}
 
-	// TODO(eyakubovich): IPv6
 	ipn := &net.IPNet{
 		IP:   pr.IP4.Gateway,
 		Mask: net.CIDRMask(32, 32),
 	}
 	addr := &netlink.Addr{IPNet: ipn, Label: ""}
 	if err = netlink.AddrAdd(link, addr); err != nil {
-		return fmt.Errorf("failed to add IP addr (%#v) to veth: %v", ipn, err)
+		return fmt.Errorf("failed to add IP addr (%#v) to tap: %v", ipn, err)
 	}
 
 	ipn = &net.IPNet{
@@ -197,40 +192,9 @@ func setupTapDevice(netns, podID string, mtu int, pr *types.Result) error {
 		return fmt.Errorf("failed to add route on host: %v", err)
 	}
 
-	// Delete the route that was automatically added
-	//route := netlink.Route{
-	//	LinkIndex: link.Attrs().Index,
-	//	Dst: &net.IPNet{
-	//		IP:   pr.IP4.IP.IP.Mask(pr.IP4.IP.Mask),
-	//		Mask: pr.IP4.IP.Mask,
-	//	},
-	//	Scope: netlink.SCOPE_NOWHERE,
-	//}
-
-	//if err := netlink.RouteDel(&route); err != nil {
-	//	return fmt.Errorf("failed to delete route %v: %v", route, err)
-	//}
-
-	//for _, r := range []netlink.Route{
-	//	netlink.Route{
-	//		LinkIndex: link.Attrs().Index,
-	//		Scope:     netlink.SCOPE_LINK,
-	//		Dst: &net.IPNet{
-	//			IP:   pr.IP4.IP.IP,
-	//			Mask: net.IPv4Mask(0xff, 0xff, 0xff, 0xff),
-	//		},
-	//	},
-	//} {
-	//	if err := netlink.RouteAdd(&r); err != nil {
-	//		return fmt.Errorf("failed to add route %v: %v", r, err)
-	//	}
-	//}
-
 	pr.IP4.Iface = link.Attrs().Name
 
 	return nil
-	//})
-	//return err
 }
 
 func cmdAdd(args *skel.CmdArgs) error {
@@ -252,7 +216,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return errors.New("IPAM plugin returned missing IPv4 config")
 	}
 
-	if args.Virt == "" {
+	if args.UsesTapDevice == "" {
 		// veth pair
 		// regular network configuration for containers
 		hostVethName, err := setupContainerVeth(args.Netns, args.IfName, conf.MTU, result)
@@ -266,7 +230,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 	} else {
 		// tap device
 		// for vm based containers
-		if err := setupTapDevice(args.Netns, args.ContainerID, conf.MTU, result); err != nil {
+		if err := setupTapDevice(args.ContainerID, conf.MTU, result); err != nil {
 			return err
 		}
 	}
@@ -278,7 +242,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 			return err
 		}
 	}
-	//result.IP4.Iface = "asd"
+
 	result.DNS = conf.DNS
 	return result.Print()
 }
