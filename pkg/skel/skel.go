@@ -29,12 +29,13 @@ import (
 // CmdArgs captures all the arguments passed in to the plugin
 // via both env vars and stdin
 type CmdArgs struct {
-	ContainerID string
-	Netns       string
-	IfName      string
-	Args        string
-	Path        string
-	StdinData   []byte
+	ContainerID   string
+	Netns         string
+	IfName        string
+	Args          string
+	Path          string
+	UsesTapDevice string
+	StdinData     []byte
 }
 
 type dispatcher struct {
@@ -46,7 +47,7 @@ type dispatcher struct {
 type reqForCmdEntry map[string]bool
 
 func (t *dispatcher) getCmdArgsFromEnv() (string, *CmdArgs, error) {
-	var cmd, contID, netns, ifName, args, path string
+	var cmd, contID, netns, ifName, args, path, usesTapDevice string
 
 	vars := []struct {
 		name      string
@@ -101,6 +102,14 @@ func (t *dispatcher) getCmdArgsFromEnv() (string, *CmdArgs, error) {
 				"DEL": true,
 			},
 		},
+		{
+			"CNI_VIRT",
+			&usesTapDevice,
+			reqForCmdEntry{
+				"ADD": false,
+				"DEL": false,
+			},
+		},
 	}
 
 	argsMissing := false
@@ -124,12 +133,13 @@ func (t *dispatcher) getCmdArgsFromEnv() (string, *CmdArgs, error) {
 	}
 
 	cmdArgs := &CmdArgs{
-		ContainerID: contID,
-		Netns:       netns,
-		IfName:      ifName,
-		Args:        args,
-		Path:        path,
-		StdinData:   stdinData,
+		ContainerID:   contID,
+		Netns:         netns,
+		IfName:        ifName,
+		Args:          args,
+		Path:          path,
+		UsesTapDevice: usesTapDevice,
+		StdinData:     stdinData,
 	}
 	return cmd, cmdArgs, nil
 }
