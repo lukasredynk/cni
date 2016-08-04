@@ -165,6 +165,29 @@ func setupVeth(netns ns.NetNS, br *netlink.Bridge, ifName string, mtu int, hairp
 	return nil
 }
 
+// setupTapDevice creates persistent tap device
+// and returns a newly created netlink.Link structure
+func setupTapDevice(br *netlink.Bridge, mtu int, hairpinMode bool) (string, error) {
+	// network device names are limited to 16 characters
+	// the suffix %d will be replaced by the kernel with a suitable number
+	link, err := ip.SetupTap(mtu)
+	if err != nil {
+		return "", err
+	}
+
+	// connect host veth end to the bridge
+	if err = netlink.LinkSetMaster(link, br); err != nil {
+		return "", fmt.Errorf("failed to connect %q to bridge %v: %v", link.Attrs().Name, br.Attrs().Name, err)
+	}
+
+	// set hairpin mode
+	if err = netlink.LinkSetHairpin(link, hairpinMode); err != nil {
+		return "", fmt.Errorf("failed to setup hairpin mode for %v: %v", link.Attrs().Name, err)
+	}
+
+	return link.Attrs().Name, nil
+}
+
 func calcGatewayIP(ipn *net.IPNet) net.IP {
 	nid := ipn.IP.Mask(ipn.Mask)
 	return ip.NextIP(nid)
@@ -195,14 +218,23 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return err
 	}
 
-	netns, err := ns.GetNS(args.Netns)
-	if err != nil {
-		return fmt.Errorf("failed to open netns %q: %v", args.Netns, err)
-	}
-	defer netns.Close()
+	var tapIface string
+	var netns ns.NetNS
+	if !args.UsesTapDevice {
+		var err error
+		netns, err = ns.GetNS(args.Netns)
+		if err != nil {
+			return fmt.Errorf("failed to open netns %q: %v", args.Netns, err)
+		}
 
-	if err = setupVeth(netns, br, args.IfName, n.MTU, n.HairpinMode); err != nil {
-		return err
+		if err = setupVeth(netns, br, args.IfName, n.MTU, n.HairpinMode); err != nil {
+			return err
+		}
+	} else {
+		var err error
+		if tapIface, err = setupTapDevice(br, n.MTU, n.HairpinMode); err != nil {
+			return err
+		}
 	}
 
 	// run the IPAM plugin and get back the config to apply
@@ -220,36 +252,41 @@ func cmdAdd(args *skel.CmdArgs) error {
 		result.IP4.Gateway = calcGatewayIP(&result.IP4.IP)
 	}
 
-	if err := netns.Do(func(_ ns.NetNS) error {
-		// set the default gateway if requested
-		if n.IsDefaultGW {
-			_, defaultNet, err := net.ParseCIDR("0.0.0.0/0")
-			if err != nil {
-				return err
-			}
-
-			for _, route := range result.IP4.Routes {
-				if defaultNet.String() == route.Dst.String() {
-					if route.GW != nil && !route.GW.Equal(result.IP4.Gateway) {
-						return fmt.Errorf(
-							"isDefaultGateway ineffective because IPAM sets default route via %q",
-							route.GW,
-						)
-					}
-				}
-			}
-
-			result.IP4.Routes = append(
-				result.IP4.Routes,
-				types.Route{Dst: *defaultNet, GW: result.IP4.Gateway},
-			)
-
-			// TODO: IPV6
+	// set the default gateway if requested
+	if n.IsDefaultGW {
+		_, defaultNet, err := net.ParseCIDR("0.0.0.0/0")
+		if err != nil {
+			return err
 		}
 
-		return ipam.ConfigureIface(args.IfName, result)
-	}); err != nil {
-		return err
+		for _, route := range result.IP4.Routes {
+			if defaultNet.String() == route.Dst.String() {
+				if route.GW != nil && !route.GW.Equal(result.IP4.Gateway) {
+					return fmt.Errorf(
+						"isDefaultGateway ineffective because IPAM sets default route via %q",
+						route.GW,
+					)
+				}
+			}
+		}
+
+		result.IP4.Routes = append(
+			result.IP4.Routes,
+			types.Route{Dst: *defaultNet, GW: result.IP4.Gateway},
+		)
+
+		// TODO: IPV6
+	}
+
+	if !args.UsesTapDevice {
+		defer netns.Close()
+		if err := netns.Do(func(_ ns.NetNS) error {
+			return ipam.ConfigureIface(args.IfName, result)
+		}); err != nil {
+			return err
+		}
+	} else {
+		result.IP4.Iface = tapIface
 	}
 
 	if n.IsGW {
