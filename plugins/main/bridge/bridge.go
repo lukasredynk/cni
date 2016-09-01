@@ -331,13 +331,20 @@ func cmdDel(args *skel.CmdArgs) error {
 	}
 
 	var ipn *net.IPNet
-	err = ns.WithNetNSPath(args.Netns, func(_ ns.NetNS) error {
-		var err error
-		ipn, err = ip.DelLinkByNameAddr(args.IfName, netlink.FAMILY_V4)
-		return err
-	})
-	if err != nil {
-		return err
+	if !args.UsesTapDevice {
+		err = ns.WithNetNSPath(args.Netns, func(_ ns.NetNS) error {
+			var err error
+			ipn, err = ip.DelLinkByNameAddr(args.IfName, netlink.FAMILY_V4)
+			return err
+		})
+		if err != nil {
+			return err
+		}
+	} else {
+		err := ip.DelLinkByName(args.IfName)
+		if err != nil {
+			return err
+		}
 	}
 
 	if n.IPMasq {
