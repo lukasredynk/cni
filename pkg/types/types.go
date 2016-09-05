@@ -65,6 +65,13 @@ type NetConf struct {
 	DNS DNS `json:"dns"`
 }
 
+type MacVlanNetConf struct {
+	NetConf
+	Master string `json:"master"`
+	Mode   string `json:"mode"`
+	MTU    int    `json:"mtu"`
+}
+
 // Result is what gets returned from the plugin (via stdout) to the caller
 type Result struct {
 	IP4 *IPConfig `json:"ip4,omitempty"`

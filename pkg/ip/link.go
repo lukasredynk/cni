@@ -21,7 +21,13 @@ import (
 	"os"
 
 	"github.com/containernetworking/cni/pkg/ns"
+	"github.com/containernetworking/cni/pkg/types"
+	cnisysctl "github.com/containernetworking/cni/pkg/utils/sysctl"
 	"github.com/vishvananda/netlink"
+)
+
+const (
+	IPv4InterfaceArpProxySysctlTemplate = "net.ipv4.conf.%s.proxy_arp"
 )
 
 func makeVethPair(name, peer string, mtu int) (netlink.Link, error) {
@@ -142,6 +148,70 @@ func SetupTap(mtu int) (tap netlink.Link, err error) {
 		return nil, fmt.Errorf("cannot set link up %q", tapName)
 	}
 
+	return link, nil
+}
+
+// SetupMacVtap creates persistent macvtap device
+// and returns a newly created netlink.Link structure
+// using part of pod hash and interface number in interface name
+func SetupMacVtap(config types.MacVlanNetConf) (netlink.Link, error) {
+	master, err := netlink.LinkByName(config.Master)
+	if err != nil {
+		return nil, fmt.Errorf("cannot find master device '%v'", config.Master)
+	}
+	var mode netlink.MacvlanMode
+	switch config.Mode {
+	// if not set - defaults to bridge mode as in:
+	// https://github.com/coreos/rkt/blob/master/Documentation/networking.md#macvlan
+	case "", "bridge":
+		mode = netlink.MACVLAN_MODE_BRIDGE
+	case "private":
+		mode = netlink.MACVLAN_MODE_PRIVATE
+	case "vepa":
+		mode = netlink.MACVLAN_MODE_VEPA
+	case "passthru":
+		mode = netlink.MACVLAN_MODE_PASSTHRU
+	default:
+		return nil, fmt.Errorf("unsupported macvtap mode: %v", config.Mode)
+	}
+	mtu := master.Attrs().MTU
+	if config.MTU != 0 {
+		mtu = config.MTU
+	}
+
+	interfaceName, err := RandomTapName()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate random tap name: %v", err)
+	}
+
+	link := &netlink.Macvtap{
+		Macvlan: netlink.Macvlan{
+			LinkAttrs: netlink.LinkAttrs{
+				Name:        interfaceName,
+				MTU:         mtu,
+				ParentIndex: master.Attrs().Index,
+			},
+			Mode: mode,
+		},
+	}
+
+	if err := netlink.LinkAdd(link); err != nil {
+		return nil, fmt.Errorf("cannot create macvtap interface: %v", err)
+	}
+
+	// TODO: duplicate following lines for ipv6 support, when it will be added in other places
+	ipv4SysctlValueName := fmt.Sprintf(IPv4InterfaceArpProxySysctlTemplate, interfaceName)
+	if _, err := cnisysctl.Sysctl(ipv4SysctlValueName, "1"); err != nil {
+		// remove the newly added link and ignore errors, because we already are in a failed state
+		_ = netlink.LinkDel(link)
+		return nil, fmt.Errorf("failed to set proxy_arp on newly added interface %q: %v", interfaceName, err)
+	}
+
+	if err := netlink.LinkSetUp(link); err != nil {
+		// remove the newly added link and ignore errors, because we already are in a failed state
+		_ = netlink.LinkDel(link)
+		return nil, fmt.Errorf("cannot set up macvtap interface: %v", err)
+	}
 	return link, nil
 }
 

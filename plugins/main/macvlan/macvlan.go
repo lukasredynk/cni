@@ -29,17 +29,6 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-const (
-	IPv4InterfaceArpProxySysctlTemplate = "net.ipv4.conf.%s.proxy_arp"
-)
-
-type NetConf struct {
-	types.NetConf
-	Master string `json:"master"`
-	Mode   string `json:"mode"`
-	MTU    int    `json:"mtu"`
-}
-
 func init() {
 	// this ensures that main runs only on main thread (thread group leader).
 	// since namespace ops (unshare, setns) are done for a single thread, we
@@ -47,8 +36,8 @@ func init() {
 	runtime.LockOSThread()
 }
 
-func loadConf(bytes []byte) (*NetConf, error) {
-	n := &NetConf{}
+func loadConf(bytes []byte) (*types.MacVlanNetConf, error) {
+	n := &types.MacVlanNetConf{}
 	if err := json.Unmarshal(bytes, n); err != nil {
 		return nil, fmt.Errorf("failed to load netconf: %v", err)
 	}
@@ -73,7 +62,7 @@ func modeFromString(s string) (netlink.MacvlanMode, error) {
 	}
 }
 
-func createMacvlan(conf *NetConf, ifName string, netns ns.NetNS) error {
+func createMacvlan(conf *types.MacVlanNetConf, ifName string, netns ns.NetNS) error {
 	mode, err := modeFromString(conf.Mode)
 	if err != nil {
 		return err
@@ -107,7 +96,7 @@ func createMacvlan(conf *NetConf, ifName string, netns ns.NetNS) error {
 
 	return netns.Do(func(_ ns.NetNS) error {
 		// TODO: duplicate following lines for ipv6 support, when it will be added in other places
-		ipv4SysctlValueName := fmt.Sprintf(IPv4InterfaceArpProxySysctlTemplate, tmpName)
+		ipv4SysctlValueName := fmt.Sprintf(ip.IPv4InterfaceArpProxySysctlTemplate, tmpName)
 		if _, err := sysctl.Sysctl(ipv4SysctlValueName, "1"); err != nil {
 			// remove the newly added link and ignore errors, because we already are in a failed state
 			_ = netlink.LinkDel(mv)
@@ -129,14 +118,23 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return err
 	}
 
-	netns, err := ns.GetNS(args.Netns)
-	if err != nil {
-		return fmt.Errorf("failed to open netns %q: %v", netns, err)
-	}
-	defer netns.Close()
-
-	if err = createMacvlan(n, args.IfName, netns); err != nil {
-		return err
+	// var tapIface string
+	var tapIface netlink.Link
+	var netns ns.NetNS
+	if !args.UsesTapDevice {
+		netns, err = ns.GetNS(args.Netns)
+		defer netns.Close()
+		if err != nil {
+			return fmt.Errorf("failed to open netns %q: %v", netns, err)
+		}
+		if err = createMacvlan(n, args.IfName, netns); err != nil {
+			return err
+		}
+	} else {
+		var err error
+		if tapIface, err = ip.SetupMacVtap(*n); err != nil {
+			return err
+		}
 	}
 
 	// run the IPAM plugin and get back the config to apply
@@ -148,11 +146,15 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return errors.New("IPAM plugin returned missing IPv4 config")
 	}
 
-	err = netns.Do(func(_ ns.NetNS) error {
-		return ipam.ConfigureIface(args.IfName, result)
-	})
-	if err != nil {
-		return err
+	if !args.UsesTapDevice {
+		err = netns.Do(func(_ ns.NetNS) error {
+			return ipam.ConfigureIface(args.IfName, result)
+		})
+		if err != nil {
+			return err
+		}
+	} else {
+		result.IP4.Iface = tapIface.Attrs().Name
 	}
 
 	result.DNS = n.DNS
@@ -174,9 +176,17 @@ func cmdDel(args *skel.CmdArgs) error {
 		return nil
 	}
 
-	return ns.WithNetNSPath(args.Netns, func(_ ns.NetNS) error {
-		return ip.DelLinkByName(args.IfName)
-	})
+	if !args.UsesTapDevice {
+		return ns.WithNetNSPath(args.Netns, func(_ ns.NetNS) error {
+			return ip.DelLinkByName(args.IfName)
+		})
+	} else {
+		err := ip.DelLinkByName(args.IfName)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func renameLink(curName, newName string) error {

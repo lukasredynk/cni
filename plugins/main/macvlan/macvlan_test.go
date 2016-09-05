@@ -61,7 +61,7 @@ var _ = Describe("macvlan Operations", func() {
 	})
 
 	It("creates an macvlan link in a non-default namespace", func() {
-		conf := &NetConf{
+		conf := &types.MacVlanNetConf{
 			NetConf: types.NetConf{
 				Name: "testConfig",
 				Type: "macvlan",
